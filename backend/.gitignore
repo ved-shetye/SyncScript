@@ -1,0 +1,11 @@
+.env
+config.py
+secrets.json
+credentials.txt
+env/
+*.pem
+*.key
+*.p12
+*.pkcs12
+*.jks
+node_modules
