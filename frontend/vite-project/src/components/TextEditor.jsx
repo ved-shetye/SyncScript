@@ -1,15 +1,40 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Quill from 'quill';
 import 'quill/dist/quill.snow.css';
+import io from 'socket.io-client';
 
-const TextEditor = () => {
+const SOCKET_SERVER_URL = "http://localhost:5000"; // Replace with your server URL
+
+const TextEditor = ({ documentId }) => {
   const quillInstance = useRef(null);
+  const socket = useRef(null);
   const [content, setContent] = useState('');
   const [wordCount, setWordCount] = useState(0);
   const [charCount, setCharCount] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [savedStatus, setSavedStatus] = useState('');
   const [documentTitle, setDocumentTitle] = useState('Untitled Document');
+
+  // Initialize Socket.IO connection
+  useEffect(() => {
+    socket.current = io(SOCKET_SERVER_URL);
+
+    // Join the document room
+    socket.current.emit("join-document", documentId);
+
+    // Listen for changes from other users
+    socket.current.on("text-change", (content) => {
+      if (quillInstance.current) {
+        quillInstance.current.root.innerHTML = content;
+        setContent(content);
+      }
+    });
+
+    // Cleanup on unmount
+    return () => {
+      socket.current.disconnect();
+    };
+  }, [documentId]);
 
   // Quill initialization using callback ref
   const editorRef = useCallback((wrapper) => {
@@ -40,19 +65,24 @@ const TextEditor = () => {
     quillInstance.current.on('text-change', () => {
       const newContent = quillInstance.current.root.innerHTML;
       setContent(newContent);
-      
+
+      // Emit changes to the server
+      if (socket.current) {
+        socket.current.emit("text-change", { documentId, content: newContent });
+      }
+
       // Calculate word and character count
       const text = quillInstance.current.getText();
       setCharCount(text.length > 1 ? text.length - 1 : 0);
       const words = text.trim() ? text.trim().split(/\s+/) : [];
       setWordCount(words.length > 0 && words[0] !== '' ? words.length : 0);
-      
+
       // Reset saved status when edits are made
       if (savedStatus) {
         setSavedStatus('');
       }
     });
-  }, [savedStatus]);
+  }, [documentId, savedStatus]);
 
   // Cleanup Quill instance on unmount
   useEffect(() => {
