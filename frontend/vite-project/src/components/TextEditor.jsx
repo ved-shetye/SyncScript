@@ -1,51 +1,103 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import Quill from 'quill';
 import 'quill/dist/quill.snow.css';
 import io from 'socket.io-client';
+import { useAuth } from '../contexts/AuthContext';
 
-const SOCKET_SERVER_URL = "http://localhost:5000"; // Replace with your server URL
+const SOCKET_SERVER_URL = "http://localhost:5000";
 
-const TextEditor = ({ documentId }) => {
+const TextEditor = () => {
+  const { documentId } = useParams();
+  const { currentUser } = useAuth();
+  const navigate = useNavigate();
   const quillInstance = useRef(null);
   const socket = useRef(null);
-  const [content, setContent] = useState('');
-  const [wordCount, setWordCount] = useState(0);
-  const [charCount, setCharCount] = useState(0);
+  const titleTimeout = useRef(null);
+  
+  const [loading, setLoading] = useState(true);
+  const [documentData, setDocumentData] = useState({
+    title: 'Untitled Document',
+    content: '',
+    wordCount: 0,
+    charCount: 0
+  });
   const [isSaving, setIsSaving] = useState(false);
   const [savedStatus, setSavedStatus] = useState('');
-  const [documentTitle, setDocumentTitle] = useState('Untitled Document');
 
-  // Initialize Socket.IO connection
+  // Fetch document data
   useEffect(() => {
-    socket.current = io(SOCKET_SERVER_URL);
+    const fetchDocument = async () => {
+      try {
+        const response = await fetch(`/api/documents/${documentId}`, {
+          headers: {
+            'Authorization': `Bearer ${currentUser?.token}`
+          }
+        });
+        
+        if (!response.ok) {
+          navigate('/');
+          return;
+        }
 
-    // Join the document room
+        const data = await response.json();
+        setDocumentData({
+          title: data.title,
+          content: data.content,
+          wordCount: data.wordCount,
+          charCount: data.charCount
+        });
+        setLoading(false);
+      } catch (err) {
+        navigate('/');
+      }
+    };
+
+    if (currentUser) fetchDocument();
+  }, [documentId, currentUser, navigate]);
+
+  // Socket.io connection
+  useEffect(() => {
+    if (!currentUser) return;
+
+    socket.current = io(SOCKET_SERVER_URL, {
+      auth: { token: currentUser.token }
+    });
+
+    socket.current.on("connect_error", (err) => {
+      console.error("Connection error:", err);
+      setSavedStatus('Connection error');
+    });
+
     socket.current.emit("join-document", documentId);
 
-    // Listen for changes from other users
-    socket.current.on("text-change", (content) => {
+    socket.current.on("document-content", (content) => {
       if (quillInstance.current) {
         quillInstance.current.root.innerHTML = content;
-        setContent(content);
       }
     });
 
-    // Cleanup on unmount
+    socket.current.on("text-change", (content) => {
+      if (quillInstance.current && quillInstance.current.root.innerHTML !== content) {
+        quillInstance.current.root.innerHTML = content;
+        const text = quillInstance.current.getText();
+        updateCounts(text);
+      }
+    });
+
     return () => {
-      socket.current.disconnect();
+      socket.current?.disconnect();
     };
-  }, [documentId]);
+  }, [documentId, currentUser]);
 
-  // Quill initialization using callback ref
+  // Quill initialization
   const editorRef = useCallback((wrapper) => {
-    if (wrapper === null) return;
+    if (!wrapper || !documentData.content) return;
 
-    // Clear existing content and create new editor container
     wrapper.innerHTML = '';
     const editor = document.createElement('div');
     wrapper.appendChild(editor);
 
-    // Initialize Quill
     quillInstance.current = new Quill(editor, {
       theme: 'snow',
       modules: {
@@ -53,57 +105,65 @@ const TextEditor = ({ documentId }) => {
           ['bold', 'italic', 'underline', 'strike'],
           [{ 'font': [] }, { 'header': [1, 2, 3, 4, 5, 6, false] }],
           [{ 'color': [] }, { 'background': [] }, { 'align': [] }],
-          [{ 'list': 'ordered' }, { 'list': 'bullet' }, { 'list': 'check' }, { 'indent': '-1'}, { 'indent': '+1' }],
+          [{ 'list': 'ordered' }, { 'list': 'bullet' }, { 'list': 'check' }, 
+           { 'indent': '-1'}, { 'indent': '+1' }],
           [{ 'script': 'sub'}, { 'script': 'super' }, 'blockquote', 'code-block'],
           ['link', 'image', 'video', 'clean'],
-        ],
+        ]
       },
       placeholder: 'Type your document content here...',
     });
 
-    // Handle content changes
+    quillInstance.current.root.innerHTML = documentData.content;
+
     quillInstance.current.on('text-change', () => {
       const newContent = quillInstance.current.root.innerHTML;
-      setContent(newContent);
-
-      // Emit changes to the server
-      if (socket.current) {
-        socket.current.emit("text-change", { documentId, content: newContent });
-      }
-
-      // Calculate word and character count
       const text = quillInstance.current.getText();
-      setCharCount(text.length > 1 ? text.length - 1 : 0);
-      const words = text.trim() ? text.trim().split(/\s+/) : [];
-      setWordCount(words.length > 0 && words[0] !== '' ? words.length : 0);
+      
+      setDocumentData(prev => ({
+        ...prev,
+        content: newContent,
+        charCount: text.length - 1,
+        wordCount: text.trim().split(/\s+/).length
+      }));
 
-      // Reset saved status when edits are made
-      if (savedStatus) {
-        setSavedStatus('');
-      }
+      socket.current?.emit("text-change", { 
+        documentId, 
+        content: newContent 
+      });
+
+      setSavedStatus('');
     });
-  }, [documentId, savedStatus]);
+  }, [documentId, documentData.content]);
 
-  // Cleanup Quill instance on unmount
-  useEffect(() => {
-    return () => {
-      if (quillInstance.current) {
-        quillInstance.current = null;
-      }
-    };
-  }, []);
+  const updateCounts = (text) => {
+    setDocumentData(prev => ({
+      ...prev,
+      charCount: text.length - 1,
+      wordCount: text.trim() ? text.trim().split(/\s+/).length : 0
+    }));
+  };
 
   const handleSave = async () => {
-    setIsSaving(true);
-    
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 800));
-      console.log('Saving content:', content);
+      setIsSaving(true);
+      const response = await fetch(`/api/documents/${documentId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentUser.token}`
+        },
+        body: JSON.stringify({
+          title: documentData.title,
+          content: documentData.content
+        })
+      });
+
+      if (!response.ok) throw new Error('Save failed');
       
       setSavedStatus('All changes saved');
       setTimeout(() => setSavedStatus(''), 3000);
-    } catch (error) {
+    } catch (err) {
       setSavedStatus('Error saving document');
     } finally {
       setIsSaving(false);
@@ -111,23 +171,41 @@ const TextEditor = ({ documentId }) => {
   };
 
   const handleTitleChange = (e) => {
-    setDocumentTitle(e.target.value);
+    const newTitle = e.target.value;
+    setDocumentData(prev => ({ ...prev, title: newTitle }));
+    
+    // Debounced title update
+    clearTimeout(titleTimeout.current);
+    titleTimeout.current = setTimeout(async () => {
+      try {
+        await fetch(`/api/documents/${documentId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${currentUser.token}`
+          },
+          body: JSON.stringify({ title: newTitle })
+        });
+      } catch (err) {
+        setSavedStatus('Error updating title');
+      }
+    }, 1000);
   };
 
   const handleExport = () => {
-    // Export as HTML
-    const blob = new Blob([content], { type: 'text/html' });
+    const blob = new Blob([documentData.content], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${documentTitle}.html`;
+    a.download = `${documentData.title}.html`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
+  if (loading) return <div className="text-center py-8">Loading document...</div>;
+
   return (
     <div className="min-h-screen bg-white">
-      {/* App Header - Google Docs style */}
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="flex items-center justify-between px-4 py-2">
           <div className="flex items-center space-x-4">
@@ -142,7 +220,7 @@ const TextEditor = ({ documentId }) => {
             </div>
             <input
               type="text"
-              value={documentTitle}
+              value={documentData.title}
               onChange={handleTitleChange}
               className="text-lg font-medium focus:outline-none focus:border-b-2 focus:border-blue-500 py-1"
             />
@@ -168,48 +246,29 @@ const TextEditor = ({ documentId }) => {
             >
               Export
             </button>
-            <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center">
-              U
-            </div>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="pt-1 pb-16">
         <div className="max-w-4xl mx-auto flex flex-col">
           <div className="flex justify-center bg-white">
             <div className="bg-white w-full border border-gray-200 shadow-sm min-h-screen">
-              {/* Editor container using callback ref */}
               <div ref={editorRef} className="h-full min-h-screen"></div>
             </div>
           </div>
         </div>
       </main>
 
-      {/* Status Bar */}
       <footer className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 py-2 px-4 shadow-md">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
           <div className="flex space-x-4 text-sm text-gray-600">
-            <span>{wordCount} words</span>
-            <span>{charCount} characters</span>
-          </div>
-          <div className="flex space-x-4">
-            <button className="text-gray-700 hover:bg-gray-100 p-2 rounded-full">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-              </svg>
-            </button>
-            <button className="text-gray-700 hover:bg-gray-100 p-2 rounded-full">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
-              </svg>
-            </button>
+            <span>{documentData.wordCount} words</span>
+            <span>{documentData.charCount} characters</span>
           </div>
         </div>
       </footer>
 
-      {/* Custom styles for Quill */}
       <style jsx>{`
         :global(.ql-toolbar.ql-snow) {
           border-top: none !important;
