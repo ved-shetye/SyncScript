@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import LoadingSpinner from '../components/LoadingSpinner';
 
 function Home() {
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
+  const { currentUser, loading: authLoading } = useAuth();
   const [showAllTemplates, setShowAllTemplates] = useState(false);
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [error, setError] = useState('');
@@ -27,22 +28,23 @@ function Home() {
     : [documentTemplates[0], ...documentTemplates.slice(1, 4)];
 
   useEffect(() => {
+    if (!authLoading && !currentUser) {
+      navigate('/auth');
+    }
+  }, [currentUser, authLoading, navigate]);
+
+  useEffect(() => {
     const fetchRecentDocuments = async () => {
       try {
         setDocumentsLoading(true);
         const response = await fetch('/api/documents/recent', {
-          headers: {
-            'Authorization': `Bearer ${currentUser?.token}`
-          }
+          headers: { 'Authorization': `Bearer ${currentUser?.token}` }
         });
         
-        if (response.ok) {
-          const data = await response.json();
-          setRecentDocuments(data);
-        }
+        if (!response.ok) throw new Error('Failed to load documents');
+        setRecentDocuments(await response.json());
       } catch (err) {
-        console.error('Error fetching documents:', err);
-        setError('Failed to load recent documents');
+        setError(err.message);
       } finally {
         setDocumentsLoading(false);
       }
@@ -89,6 +91,10 @@ function Home() {
   const initials = currentUser?.email 
     ? currentUser.email.split('@')[0].split('.').map(name => name[0].toUpperCase()).join('')
     : 'GU';
+
+  if (authLoading) {
+    return <LoadingSpinner />;
+  }
 
   return (
     <div className="bg-gray-900 min-h-screen text-gray-200 font-sans">
@@ -193,7 +199,7 @@ function Home() {
 
           {documentsLoading ? (
             <div className="text-center py-4 text-gray-400">
-              Loading documents...
+              <LoadingSpinner />
             </div>
           ) : recentDocuments.length === 0 ? (
             <div className="text-center py-4 text-gray-400">

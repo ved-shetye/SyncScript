@@ -13,9 +13,9 @@ function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/auth" element={<AuthSlider />} />
         <Route path="/main" element={<Home />} />
-        <Route path="/text-editor" element={<TextEditor />} />
+        <Route path="/text-editor/:documentId" element={<TextEditor />} />
       </Routes>
-    </AuthProvider>   
+    </AuthProvider>
   );
 }
 

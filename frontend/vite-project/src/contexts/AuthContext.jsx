@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useState, useEffect } from 'react';
 
 const AuthContext = createContext();
 
@@ -9,27 +9,32 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
-      // Verify token with backend
-      fetch('/api/auth/profile', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      .then(res => res.json())
-      .then(user => {
-        setCurrentUser({ ...user, token });
-        setLoading(false);
-      })
-      .catch(() => {
-        localStorage.removeItem('token');
-        setLoading(false);
-      });
+      verifyToken(token);
     } else {
       setLoading(false);
     }
   }, []);
 
-  const login = (token) => {
+  const verifyToken = async (token) => {
+    try {
+      const response = await fetch('/api/auth/verify', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (response.ok) {
+        const user = await response.json();
+        setCurrentUser({ ...user, token });
+      }
+    } catch (error) {
+      localStorage.removeItem('token');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const login = (token, userData) => {
     localStorage.setItem('token', token);
-    setCurrentUser({ token });
+    setCurrentUser({ ...userData, token });
   };
 
   const logout = () => {
@@ -38,7 +43,12 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ currentUser, login, logout, loading }}>
+    <AuthContext.Provider value={{ 
+      currentUser, 
+      login, 
+      logout, 
+      loading 
+    }}>
       {!loading && children}
     </AuthContext.Provider>
   );
